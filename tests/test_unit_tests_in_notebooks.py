@@ -53,7 +53,7 @@ testnames, testdata = create_test_cases_from_filenames()
 @pytest.mark.parametrize("filename, correctoutcome", testdata, ids=testnames)
 def test_print(filename, correctoutcome):
 
-    command = ["py.test", "--nbval", "-v", "--current-env", filename]
+    command = ["py.test", "--nbval", "-v", "--nbval-current-env", filename]
     print("Starting parametrized test with filename={}, correctoutcome={}"
           .format(filename, correctoutcome))
     print("Command about to execute is '{}'".format(command))
@@ -66,7 +66,7 @@ def test_print(filename, correctoutcome):
     if correctoutcome == 'pass':
         if exitcode != 0:
             raise AssertionError("Tests failed on ipynb (expected pass)")
-        assert exitcode is 0
+        assert exitcode == 0
         print("The call of py.test has not reported errors - this is good.")
     elif correctoutcome == 'fail':
         if exitcode == 0:

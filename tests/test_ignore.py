@@ -23,9 +23,9 @@ def test_conf_ignore_stderr(testdir):
     # Setup notebook with stream outputs
     nb = build_nb([
         "import sys",
-        "sys.stdout.write('test\\n')",
-        "sys.stderr.write('error output\\n')",
-        "sys.stdout.write('test\\n')\nsys.stderr.write('error output\\n')",
+        "print('test')",
+        "print('error output', file=sys.stderr)",
+        "print('test')\nprint('error output', file=sys.stderr)",
     ], mark_run=True)
     nb.cells[1].outputs.append(nbformat.v4.new_output(
         'stream',
@@ -51,7 +51,7 @@ def test_conf_ignore_stderr(testdir):
         str(testdir.tmpdir), 'test_ignore.ipynb'))
 
     # Run tests
-    result = testdir.runpytest_subprocess('--nbval', '--current-env', '.')
+    result = testdir.runpytest_subprocess('--nbval', '--nbval-current-env', '.')
 
     # Check tests went off as they should:
     assert result.ret == 0

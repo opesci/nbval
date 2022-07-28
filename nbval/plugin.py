@@ -16,13 +16,7 @@ import hashlib
 import warnings
 from collections import OrderedDict, defaultdict
 
-# for python 3 compatibility
-import six
-
-try:
-    from Queue import Empty
-except:
-    from queue import Empty
+from queue import Empty
 
 # for reading notebook files
 import nbformat
@@ -71,27 +65,46 @@ def pytest_addoption(parser):
 
     This is called by the pytest API
     """
-    group = parser.getgroup("general")
+    group = parser.getgroup("nbval", "Jupyter Notebook validation")
+
     group.addoption('--nbval', action='store_true',
-                    help="Validate Jupyter notebooks")
+                    help="Run Jupyter notebooks, validating all output")
 
     group.addoption('--nbval-lax', action='store_true',
                     help="Run Jupyter notebooks, only validating output on "
                          "cells marked with # NBVAL_CHECK_OUTPUT")
 
-    group.addoption('--sanitize-with',
+    group.addoption('--nbval-sanitize-with',
                     help='File with regex expressions to sanitize '
                          'the outputs. This option only works when '
                          'the --nbval flag is passed to py.test')
 
-    group.addoption('--current-env', action='store_true',
+    group.addoption('--nbval-current-env', action='store_true',
                     help='Force test execution to use a python kernel in '
-                         'the same enviornment that py.test was '
-                         'launched from.')
+                         'the same environment that py.test was '
+                         'launched from. Without this flag, the kernel stored '
+                         'in the notebook is used by default. '
+                         'See also: --nbval-kernel-name')
+
+    group.addoption('--nbval-kernel-name', action='store', default=None,
+                    help='Force test execution to use the named kernel. '
+                         'If a kernel is not named, the kernel stored in the '
+                         'notebook is used by default. '
+                         'See also: --current-env')
 
     group.addoption('--nbval-cell-timeout', action='store', default=2000,
                     type=float,
                     help='Timeout for cell execution, in seconds.')
+
+    group.addoption('--nbval-kernel-startup-timeout', action='store', default=60,
+                    type=float,
+                    help='Timeout for kernel startup, in seconds.')
+
+    group.addoption('--sanitize-with',
+                    help='(deprecated) Alias of --nbval-sanitize-with')
+
+    group.addoption('--current-env', action='store_true',
+                    help='(deprecated) Alias of --nbval-current-env')    
 
     term_group = parser.getgroup("terminal reporting")
     term_group._addoption(
@@ -104,6 +117,20 @@ def pytest_configure(config):
         from .nbdime_reporter import NbdimeReporter
         reporter = NbdimeReporter(config, sys.stdout)
         config.pluginmanager.register(reporter, 'nbdimereporter')
+    if config.option.sanitize_with:
+        warnings.warn("--sanitize-with has been renamed to --nbval-sanitize-with", DeprecationWarning)
+        if config.option.nbval_sanitize_with:
+            raise ValueError("--sanitize-with and --nbval-sanitize-with were both supplied.")
+        config.option.nbval_sanitize_with = config.option.sanitize_with
+    if config.option.current_env:
+        warnings.warn("--current-env has been renamed to --nbval-current-env", DeprecationWarning)
+        if config.option.nbval_current_env:
+            raise ValueError("--current-env and --nbval-current-env were both supplied.")
+        config.option.nbval_current_env = config.option.current_env
+    if config.option.nbval or config.option.nbval_lax:
+        if config.option.nbval_kernel_name and config.option.current_env:
+            raise ValueError("--current-env and --nbval-kernel-name are mutually exclusive.")
+
 
 
 def pytest_collect_file(path, parent):
@@ -112,7 +139,11 @@ def pytest_collect_file(path, parent):
     """
     opt = parent.config.option
     if (opt.nbval or opt.nbval_lax) and path.fnmatch("*.ipynb"):
-        return IPyNbFile(path, parent)
+        # https://docs.pytest.org/en/stable/deprecations.html#node-construction-changed-to-node-from-parent
+        if hasattr(IPyNbFile, "from_parent"):
+            return IPyNbFile.from_parent(parent, fspath=path)
+        else:  # Pytest < 5.4
+            return IPyNbFile(path, parent)
 
 
 
@@ -224,13 +255,20 @@ class IPyNbFile(pytest.File):
         Called by pytest to setup the collector cells in .
         Here we start a kernel and setup the sanitize patterns.
         """
-
-        if self.parent.config.option.current_env:
+        # we've already checked that --nbval-current-env and
+        # --nbval-kernel-name were not both supplied
+        if self.parent.config.option.nbval_current_env:
             kernel_name = CURRENT_ENV_KERNEL_NAME
+        elif self.parent.config.option.nbval_kernel_name:
+            kernel_name = self.parent.config.option.nbval_kernel_name
         else:
             kernel_name = self.nb.metadata.get(
                 'kernelspec', {}).get('name', 'python')
-        self.kernel = RunningKernel(kernel_name, str(self.fspath.dirname))
+        self.kernel = RunningKernel(
+            kernel_name,
+            cwd=str(self.fspath.dirname),
+            startup_timeout=self.config.option.nbval_kernel_startup_timeout, 
+        )
         self.setup_sanitize_files()
         if getattr(self.parent.config.option, 'cov_source', None):
             setup_coverage(self.parent.config, self.kernel, getattr(self, "fspath", None))
@@ -254,8 +292,8 @@ class IPyNbFile(pytest.File):
               this is likely to change in the future
 
         """
-        if self.parent.config.option.sanitize_with is not None:
-            return [self.parent.config.option.sanitize_with]
+        if self.parent.config.option.nbval_sanitize_with is not None:
+            return [self.parent.config.option.nbval_sanitize_with]
         else:
             return []
 
@@ -308,8 +346,14 @@ class IPyNbFile(pytest.File):
                     )
                 options.update(comment_opts)
                 options.setdefault('check', self.compare_outputs)
-                yield IPyNbCell('Cell ' + str(cell_num), self, cell_num,
-                                cell, options)
+                name = 'Cell ' + str(cell_num)
+                # https://docs.pytest.org/en/stable/deprecations.html#node-construction-changed-to-node-from-parent
+                if hasattr(IPyNbCell, "from_parent"):
+                    yield IPyNbCell.from_parent(
+                        self, name=name, cell_num=cell_num, cell=cell, options=options
+                    )
+                else:
+                    yield IPyNbCell(name, self, cell_num, cell, options)
 
                 # Update 'code' cell count
                 cell_num += 1
@@ -491,9 +535,9 @@ class IPyNbCell(pytest.Item):
 
     def format_output_compare(self, key, left, right):
         """Format an output for printing"""
-        if isinstance(left, six.string_types):
+        if isinstance(left, str):
             left = _trim_base64(left)
-        if isinstance(right, six.string_types):
+        if isinstance(right, str):
             right = _trim_base64(right)
 
         cc = self.colors
@@ -787,7 +831,7 @@ class IPyNbCell(pytest.Item):
     def sanitize(self, s):
         """sanitize a string for comparison.
         """
-        if not isinstance(s, six.string_types):
+        if not isinstance(s, str):
             return s
 
         """
@@ -796,7 +840,7 @@ class IPyNbCell(pytest.Item):
         is passed when py.test is called. Otherwise, the strings
         are not processed
         """
-        for regex, replace in six.iteritems(self.parent.sanitize_patterns):
+        for regex, replace in self.parent.sanitize_patterns.items():
             s = re.sub(regex, replace, s)
         return s
 
@@ -892,6 +936,6 @@ def _trim_base64(s):
 
 def _indent(s, indent='  '):
     """Intent each line with indent"""
-    if isinstance(s, six.string_types):
+    if isinstance(s, str):
         return '\n'.join(('%s%s' % (indent, line) for line in s.splitlines()))
     return s

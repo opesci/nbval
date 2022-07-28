@@ -22,12 +22,12 @@ def _clean_dist_cmd():
 def task_test():
     return {
         'actions': [
-            _make_cmd(["py.test", "-v", "tests/", "--nbval", "--current-env", "--sanitize-with", "tests/sanitize_defaults.cfg", "--ignore", "tests/ipynb-test-samples"]),
+            _make_cmd(["py.test", "-v", "tests/", "--nbval", "--nbval-current-env", "--nbval-sanitize-with", "tests/sanitize_defaults.cfg", "--ignore", "tests/ipynb-test-samples"]),
         ],
     }
 
 def task_install_test_deps():
-    test_deps = ['matplotlib', 'sympy', 'pytest-cov']
+    test_deps = ['matplotlib', 'sympy', 'pytest-cov', 'pytest-mock', 'nbdime']
     return {
         'actions': [_make_cmd(['pip', 'install'] + test_deps)],
     }
